@@ -68,10 +68,6 @@ public class ResMgr : MgrBase
         }
         m_Pool.Clear();
 
-        foreach (var obj in m_Objects.Values)
-        {
-            Resources.UnloadAsset(obj);
-        }
         m_Objects.Clear();
     }
 

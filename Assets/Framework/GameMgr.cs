@@ -17,18 +17,21 @@ public class GameMgr : MgrBase
 
     public EnGameState State;
     public Transform GameRoot;
-    public LineRenderer Line;
 
     private List<NodeData> m_Nodes;
-    private int m_TmpIndex;     // drag点的序号
-    private Vector3 m_TmpPos;   // drag点的坐标
+    private LineData m_CurLine;
+    private int m_CurIndex;     // drag点的序号
+    private Vector3 m_CurPos;   // drag点的坐标
+    private List<LineData> m_Lines;
 
     public override void Init()
     {
         base.Init();
         m_Nodes = new List<NodeData>();
-        m_TmpIndex = -1;
-        m_TmpPos = Vector3.zero;
+        m_Lines = new List<LineData>();
+        m_CurLine = null;
+        m_CurIndex = -1;
+        m_CurPos = Vector3.zero;
         GameReady();
     }
 
@@ -47,10 +50,11 @@ public class GameMgr : MgrBase
     public void GameStart()
     {
         State = EnGameState.Start;
-        m_TmpIndex = -1;
+        m_CurIndex = -1;
+        m_CurLine = null;
         UIMgr.It.OpenUI("UIGame");
+        ClearMap();
         LoadMap(1);
-        InitLine();
     }
 
     public void GamePause()
@@ -71,31 +75,69 @@ public class GameMgr : MgrBase
 
     #endregion
 
-    void LoadMap(int idx)
+    void LoadMap(int mapIdx)
     {
-        MapConfig map = Config.MapCfg[idx - 1];
+        MapConfig map = Config.MAP_CFG[mapIdx - 1];
         NodeData node;
-        Transform tf;
-        for (int i = 0; i < map.nodes.Length; i++)
+        GameObject obj;
+        m_Nodes.Clear();
+        foreach (var cfg in map.nodes)
         {
-            node = new NodeData();
-            node.cfg = map.nodes[i];
-            node.obj = ResMgr.It.CreatePrefab(Config.NodePrefab[(int)node.cfg.type - 1]);
-            tf = node.obj.transform;
-            tf.parent = GameRoot;
-            tf.localPosition = new Vector3(node.cfg.x, node.cfg.y);
-            tf.localScale = new Vector3(2, 2);
+            node = new NodeData() { cfg = cfg, };
+            obj = ResMgr.It.CreatePrefab(Config.NODE_PREFAB[(int)cfg.type - 1]);
+            node.tf = obj.transform;
+            node.tf.parent = GameRoot;
+            node.tf.localPosition = new Vector3(cfg.x, cfg.y);
+            node.tf.localScale = new Vector3(2, 2);
+            node.sr = obj.GetComponent<SpriteRenderer>();
+            obj.SetActive(true);
             m_Nodes.Add(node);
+        }
+        m_Lines.Clear();
+        LineData line;
+        LineRenderer lr;
+        int count = map.lines.GetLength(0);
+        int item = map.lines.GetLength(1);
+        int nodeidx;
+        for (int i = 0; i < count; i++)
+        {
+            obj = ResMgr.It.CreatePrefab(Config.LINE_PREFAB);
+            obj.transform.parent = GameRoot;
+            lr = obj.GetComponent<LineRenderer>();
+            line = new LineData() { id = i, obj = obj, lr = lr };
+            lr.startColor = Config.LINE_COLOR[i];
+            lr.endColor = Config.LINE_COLOR[i];
+            lr.startWidth = Config.LINE_WIDTH;
+            lr.endWidth = Config.LINE_WIDTH;
+            lr.positionCount = 0;
+            for (int j = 0; j < item; j++)
+            {
+                nodeidx = map.lines[i, j];
+                if (nodeidx >= 0)
+                {
+                    node = m_Nodes[nodeidx];
+                    line.lr.positionCount++;
+                    line.lr.SetPosition(lr.positionCount-1, node.tf.position);
+                    node.sr.color = lr.startColor;
+                    node.LineCross(i);
+                }
+            }
+            m_Lines.Add(line);
         }
     }
 
-    void InitLine()
+    void ClearMap()
     {
-        NodeData node = m_Nodes[0];
-        Line.positionCount = 2;
-        Line.SetPosition(0, node.obj.transform.localPosition);
-        node = m_Nodes[m_Nodes.Count - 1];
-        Line.SetPosition(1, node.obj.transform.localPosition);
+        foreach (var line in m_Lines)
+        {
+            ResMgr.It.ReleasePrefab(Config.LINE_PREFAB, line.obj);
+        }
+        m_Lines.Clear();
+        foreach (var node in m_Nodes)
+        {
+            ResMgr.It.ReleasePrefab(Config.NODE_PREFAB[(int)node.cfg.type - 1], node.tf.gameObject);
+        }
+        m_Nodes.Clear();
     }
 
     #region 线条操作
@@ -106,56 +148,110 @@ public class GameMgr : MgrBase
         if (State != EnGameState.Start) return;
         if (Input.GetMouseButton(0))
         {
-            m_TmpPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-            m_TmpPos.z = 0;
-            if (m_TmpIndex < 0)
+            m_CurPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            m_CurPos.z = 0;
+            if (m_CurLine == null)
             {
                 // 开始drag，计算当前点在哪个线段中，找出插入点的位置
                 Vector3 cur, next;
-                m_TmpIndex = -1;
-                for (int i = 0; i < Line.positionCount-1; i++)
+                LineRenderer lr;
+                foreach (var line in m_Lines)
                 {
-                    cur = Line.GetPosition(i);
-                    next = Line.GetPosition(i + 1);
-                    if (PointInLine(m_TmpPos, cur, next))
+                    lr = line.lr;
+                    for (int j = 0; j < lr.positionCount - 1; j++)
                     {
-                        m_TmpIndex = i+1;
-                        break;
+                        cur = lr.GetPosition(j);
+                        next = lr.GetPosition(j + 1);
+                        if (PointInLine(m_CurPos, cur, next))
+                        {
+                            m_CurLine = line;
+                            m_CurIndex = j + 1;
+                            break;
+                        }
                     }
                 }
-                if (m_TmpIndex < 0) return;
+                if (m_CurLine == null) return;
 
                 // 移动idx后的点
-                Line.positionCount++;
-                for (int i = Line.positionCount-1; i > m_TmpIndex; i--)
+                lr = m_CurLine.lr;
+                lr.positionCount++;
+                for (int i = lr.positionCount-1; i > m_CurIndex; i--)
                 {
-                    Line.SetPosition(i, Line.GetPosition(i-1));
+                    lr.SetPosition(i, lr.GetPosition(i-1));
                 }
-                Line.SetPosition(m_TmpIndex, m_TmpPos);
+                lr.SetPosition(m_CurIndex, m_CurPos);
             }
             else
             {
-                Line.SetPosition(m_TmpIndex, m_TmpPos);
+                m_CurLine.lr.SetPosition(m_CurIndex, m_CurPos);
             }
         }
-        else if (m_TmpIndex > 0)
+        else if (m_CurLine != null)
         {
-            for (int i = m_TmpIndex; i < Line.positionCount-1; i++)
+            // 判断当前的临时点是否在某个节点上
+            LineRenderer lr = m_CurLine.lr;
+            if (PointInNode())
             {
-                Line.SetPosition(i, Line.GetPosition(i + 1));
+                lr.SetPosition(m_CurIndex, m_CurPos);
             }
-            Line.positionCount--;
-            m_TmpIndex = -1;
+            else
+            {
+                for (int i = m_CurIndex; i < lr.positionCount - 1; i++)
+                {
+                    lr.SetPosition(i, lr.GetPosition(i + 1));
+                }
+                lr.positionCount--;
+            }
+            m_CurIndex = -1;
+            m_CurLine = null;
         }
     }
 
     // 判定点是否在两个端点内
-    bool PointInLine(Vector3 point, Vector3 begin, Vector3 end)
+    bool PointInLine(Vector2 point, Vector2 begin, Vector2 end)
     {
-        return true;
+        float offset = Config.LINE_OFFSET;
+
+        float dx = begin.x > end.x ? begin.x : end.x;
+        if ((dx > 0 && point.x > dx + offset) || (dx < 0 && point.x > dx + offset)) return false;
+
+        dx = begin.x < end.x ? begin.x : end.x;
+        if ((dx > 0 && point.x < dx - offset) || (dx < 0 && point.x < dx - offset)) return false;
+
+        dx = begin.y > end.y ? begin.y : end.y;
+        if ((dx > 0 && point.y > dx + offset) || (dx < 0 && point.y > dx + offset)) return false;
+
+        dx = begin.y < end.y ? begin.y : end.y;
+        if ((dx > 0 && point.y < dx - offset) || (dx < 0 && point.y < dx - offset)) return false;
+
+        float a = end.y - begin.y;
+        float b = begin.x - end.x;
+        float c = end.x * begin.y - begin.x * end.y;
+        float denominator = Mathf.Sqrt(a * a + c * c);
+        float dis = Mathf.Abs((a * point.x + b * point.y + c) / denominator);
+        return dis <= offset;
     }
 
-   
+    bool PointInNode()
+    {
+        float dist;
+        foreach (var node in m_Nodes)
+        {
+            if (!node.IsCross(m_CurLine.id))
+            {
+                dist = Vector3.Distance(m_CurPos, node.tf.position);
+                if (dist <= Config.POINT_OFFSET)
+                {
+                    m_CurPos = node.tf.position;
+                    // 节点被线条联通
+                    node.sr.color = m_CurLine.lr.startColor;
+                    node.LineCross(m_CurLine.id);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     #endregion
 }
